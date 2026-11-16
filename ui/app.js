@@ -30,6 +30,11 @@ const fmtSpeed = (b) => {
 const fmtLabel = (f) => (f === 'mp3' || f === 'm4a') ? f.toUpperCase() : `${f.slice(1)}p`;
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// 같은 내용이면 DOM을 건드리지 않는다 (요소가 교체되면 진행 중인 클릭이 사라짐)
+const setHtml = (el, html) => {
+  if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+};
+
 // ─── 토스트 ───
 function toast(msg) {
   const el = document.createElement('div');
@@ -89,7 +94,8 @@ function renderJobs(jobs) {
     const err = el.querySelector('.card-err');
     err.hidden = !j.error;
     err.textContent = j.error || '';
-    el.querySelector('.card-actions').innerHTML = actionButtons(j);
+    // 버튼은 상태가 바뀔 때만 교체 — 진행률마다 바꾸면 누르는 도중 버튼이 사라져 클릭이 씹힌다
+    setHtml(el.querySelector('.card-actions'), actionButtons(j));
   }
   for (const [id, el] of existing) if (!keep.has(id)) el.remove();
 }
@@ -122,6 +128,8 @@ document.querySelectorAll('.pill').forEach((p) => p.addEventListener('click', ()
   lastJobsKey = '';
 }));
 $('#btn-clear').addEventListener('click', () => api().clear_finished());
+// 배너는 계속 다시 그려지므로 버튼에 직접 달지 않고 위임
+$('#banner').addEventListener('click', (e) => { if (e.target.id === 'btn-retry') api().retry_bootstrap(); });
 
 // ─── 바이너리 설치 배너 ───
 function renderBanner(bin) {
@@ -130,12 +138,11 @@ function renderBanner(bin) {
   if (p.active) {
     banner.hidden = false;
     banner.className = 'banner';
-    banner.innerHTML = `<span>${esc(p.label)}</span><div class="bar"><i style="width:${p.percent}%"></i></div><span>${p.percent}%</span>`;
+    setHtml(banner, `<span>${esc(p.label)}</span><div class="bar"><i style="width:${p.percent}%"></i></div><span>${p.percent}%</span>`);
   } else if (p.error || !bin.ytdlp) {
     banner.hidden = false;
     banner.className = 'banner error';
-    banner.innerHTML = `<span>필수 구성요소 설치 실패: ${esc(p.error || 'yt-dlp 없음')}</span><button class="btn small" id="btn-retry">다시 시도</button>`;
-    $('#btn-retry').onclick = () => api().retry_bootstrap();
+    setHtml(banner, `<span>필수 구성요소 설치 실패: ${esc(p.error || 'yt-dlp 없음')}</span><button class="btn small" id="btn-retry">다시 시도</button>`);
   } else {
     banner.hidden = true;
   }
@@ -153,17 +160,26 @@ function openModal(url = '') {
 }
 const closeModal = () => { $('#modal').hidden = true; };
 
-async function fetchInfo() {
-  const url = $('#url-input').value.trim();
+const showError = (msg) => {
+  $('#panel-body').innerHTML = `<div class="hint err">${esc(msg)}</div>`;
+  $('#panel-foot').hidden = true;
+};
+
+async function fetchInfo(urlOverride) {
+  const url = (typeof urlOverride === 'string' ? urlOverride : $('#url-input').value).trim();
   if (!/^https?:\/\//i.test(url)) { toast('http(s)로 시작하는 주소를 넣어 주세요'); return; }
+  $('#url-input').value = url;
   $('#panel-body').innerHTML = '<div class="spinner"></div><div class="hint">정보 가져오는 중…</div>';
   $('#panel-foot').hidden = true;
-  const info = await api().fetch_info(url);
-  if ($('#modal').hidden || $('#url-input').value.trim() !== url) return; // 그 사이 닫혔거나 바뀜
-  if (info.error) {
-    $('#panel-body').innerHTML = `<div class="hint" style="color:var(--red)">${esc(info.error)}</div>`;
-    return;
+  current = null;
+  let info;
+  try {
+    info = await api().fetch_info(url);
+  } catch (e) {
+    info = { error: `내부 오류: ${e && e.message ? e.message : e}` };
   }
+  if ($('#modal').hidden || $('#url-input').value.trim() !== url) return; // 그 사이 닫혔거나 바뀜
+  if (info.error) { showError(info.error); return; }
   current = info;
   info.type === 'playlist' ? renderPlaylist(info) : renderVideo(info);
   renderFormats(info.type === 'video' ? info.heights : [2160, 1440, 1080, 720, 480, 360]);
@@ -176,15 +192,18 @@ function renderVideo(v) {
       <div class="meta">
         <div class="t">${esc(v.title)}</div>
         <div class="s">${esc(v.uploader || '')}${v.duration ? ' · ' + fmtDuration(v.duration) : ''}</div>
+        ${v.playlist_url ? '<button class="btn small" id="btn-whole-pl">재생목록 전체 보기</button>' : ''}
       </div>
     </div>`;
+  if (v.playlist_url) $('#btn-whole-pl').onclick = () => fetchInfo(v.playlist_url);
 }
 
 function renderPlaylist(pl) {
+  const skipped = pl.skipped ? ` · 받을 수 없는 ${pl.skipped}개 제외` : '';
   $('#panel-body').innerHTML = `
     <div class="pl-head">
       <input type="checkbox" id="pl-all" checked>
-      <label for="pl-all"><b>${esc(pl.title || '재생목록')}</b> · ${pl.entries.length}개</label>
+      <label for="pl-all"><b>${esc(pl.title || '재생목록')}</b> · ${pl.entries.length}개${skipped}</label>
     </div>
     <div class="pl-list">${pl.entries.map((e, i) => `
       <label class="pl-item">
@@ -223,9 +242,13 @@ async function startDownload() {
   } else {
     items = [{ url: current.url, title: current.title, thumbnail: current.thumbnail, duration: current.duration }];
   }
-  const n = await api().add_download(items, selectedFmt);
-  closeModal();
-  toast(`✓ ${n}개를 대기열에 추가했어요`);
+  try {
+    const n = await api().add_download(items, selectedFmt);
+    closeModal();
+    toast(`✓ ${n}개를 대기열에 추가했어요`);
+  } catch (e) {
+    toast(`추가 실패: ${e && e.message ? e.message : e}`);
+  }
 }
 
 // ─── 이벤트 연결 ───
@@ -236,9 +259,34 @@ async function pasteAndOpen() {
 }
 $('#btn-paste').addEventListener('click', pasteAndOpen);
 $('#btn-paste-empty').addEventListener('click', pasteAndOpen);
-$('#btn-fetch').addEventListener('click', fetchInfo);
+$('#btn-fetch').addEventListener('click', () => fetchInfo());
 $('#btn-download').addEventListener('click', startDownload);
 $('#url-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') fetchInfo(); });
+
+// 테두리 없는 창의 크기 조절 손잡이 (오른쪽 아래). 요청이 쌓이지 않게 한 번에 하나만 보낸다
+(() => {
+  let start = null, busy = false, pending = null;
+  const send = () => {
+    if (busy || !pending) return;
+    const [w, h] = pending; pending = null; busy = true;
+    Promise.resolve(api().win_resize(w, h)).finally(() => { busy = false; send(); });
+  };
+  const onMove = (e) => {
+    pending = [start.w + e.screenX - start.x, start.h + e.screenY - start.y];
+    send();
+  };
+  const onUp = () => {
+    start = null;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  $('#resize-grip').addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    start = { x: e.screenX, y: e.screenY, w: window.innerWidth, h: window.innerHeight };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+})();
 $('#modal').addEventListener('mousedown', (e) => { if (e.target.id === 'modal') closeModal(); });
 $('#settings-modal').addEventListener('mousedown', (e) => {
   if (e.target.id === 'settings-modal') $('#settings-modal').hidden = true;
@@ -269,7 +317,9 @@ function openSettings() {
   $('#out-dir').title = settings.out_dir || '';
   $('#sel-concurrent').value = String(settings.max_concurrent || 2);
   $('#settings-modal').hidden = false;
+  api().app_info().then((v) => { $('#versions').textContent = `앱 v${v.app} · yt-dlp ${v.ytdlp}`; });
 }
+$('#btn-open-logs').addEventListener('click', () => api().open_logs());
 $('#btn-settings').addEventListener('click', openSettings);
 $('#btn-choose-folder').addEventListener('click', async () => {
   const dir = await api().choose_folder();
@@ -281,10 +331,12 @@ $('#btn-update').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
   btn.textContent = '확인 중…';
-  const msg = await api().update_ytdlp();
+  let msg;
+  try { msg = await api().update_ytdlp(); } catch (err) { msg = `업데이트 실패: ${err}`; }
   btn.disabled = false;
   btn.textContent = '확인';
   toast(msg);
+  api().app_info().then((v) => { $('#versions').textContent = `앱 v${v.app} · yt-dlp ${v.ytdlp}`; });
 });
 
 // ─── 폴링 루프 ───
