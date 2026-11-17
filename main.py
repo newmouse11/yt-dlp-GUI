@@ -76,6 +76,7 @@ class Api:
 
     # --- 메타데이터/대기열 ---
     def fetch_info(self, url):
+        binaries.wait_ytdlp(timeout=600)  # 첫 실행 설치 중에 붙여넣어도 오류 대신 기다렸다 조회
         return fetch_info(str(url or ""))
 
     def add_download(self, items, fmt):
@@ -151,10 +152,13 @@ def resource(rel: str) -> str:
 def webview2_missing(window: webview.Window | None = None) -> None:
     """WebView2가 없거나 망가졌을 때 — 닫기 버튼도 없는 빈 창 대신 안내하고 종료."""
     log.error("WebView2 런타임 사용 불가 — 안내 후 종료")
-    mb_yesno, mb_iconerror, idyes = 0x4, 0x10, 6
+    if window:
+        window.hide()  # 빈 검은 창이 안내 창을 가리지 않게 (샌드박스에서 실제로 가려짐)
+    # MB_YESNO | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST
+    flags, idyes = 0x4 | 0x10 | 0x10000 | 0x40000, 6
     text = ("화면 표시에 필요한 Microsoft Edge WebView2 런타임을 찾을 수 없습니다.\n\n"
             "설치 페이지를 열까요? (설치 후 다시 실행하세요)")
-    if ctypes.windll.user32.MessageBoxW(None, text, "다운로더", mb_yesno | mb_iconerror) == idyes:
+    if ctypes.windll.user32.MessageBoxW(None, text, "다운로더", flags) == idyes:
         webbrowser.open(WEBVIEW2_URL)
     if window:
         window.destroy()

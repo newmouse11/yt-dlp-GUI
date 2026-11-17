@@ -19,6 +19,7 @@ with open(os.path.join(WORK, "appdata", "ytdlp-gui", "config.json"), "w", encodi
 
 import webview  # noqa: E402
 
+import binaries  # noqa: E402
 import main  # noqa: E402
 
 MIXED = "https://www.youtube.com/watch?v=cGjgCLuyAro&list=PLTLKMoAcZh5I&index=13"
@@ -51,11 +52,10 @@ def wait_js(w, cond, timeout=120, step=0.5):
 def scenario(w: webview.Window):
     try:
         check("첫 화면: 빈 상태 표시", wait_js(w, "!document.querySelector('#empty').hidden", 30))
-        # 깨끗한 PC에서는 첫 실행에 yt-dlp(23MB)+ffmpeg(200MB)를 받으므로 넉넉히 기다린다
-        check("첫 실행 설치 완료 (배너 숨김)", wait_js(w, "document.querySelector('#banner').hidden", 900),
-              js(w, "document.querySelector('#banner').innerText"))
+        fresh = binaries.progress["active"]  # 새 폴더면 지금 첫 실행 설치 중
 
         # 1) Ctrl+V 붙여넣기 이벤트 → 모달 열림 + 자동 조회 (섞인 주소)
+        #    첫 실행 설치 중이어도 오류 없이 yt-dlp 설치를 기다렸다가 조회돼야 한다
         js(w, f"""(() => {{ const dt = new DataTransfer(); dt.setData('text/plain', {json.dumps(MIXED)});
             document.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true}})); }})()""")
         check("붙여넣기 → 모달 열림", wait_js(w, "!document.querySelector('#modal').hidden", 5))
@@ -64,6 +64,16 @@ def scenario(w: webview.Window):
         check("재생목록 전체 보기 버튼", js(w, "!!document.querySelector('#btn-whole-pl')"))
         check("화질 선택지 표시", js(w, "document.querySelectorAll('.fmt').length >= 3"),
               js(w, "document.querySelector('#fmt-pills').innerText"))
+        print(f"     (첫 실행 설치 중 조회 경로 검사: {fresh})", flush=True)
+
+        # 깨끗한 PC에서는 ffmpeg(200MB)까지 받으므로 넉넉히 기다린다 — 배너는 HTML에서 처음부터
+        # hidden이라 DOM만 보면 첫 폴링 전에 통과해 버리므로 실제 설치 상태로 판단
+        end = time.time() + 900
+        while time.time() < end and (binaries.progress["active"] or not binaries.ffmpeg_path()):
+            time.sleep(1)
+        check("첫 실행 설치 완료", binaries.ytdlp_path() and binaries.ffmpeg_path(), binaries.progress)
+        check("설치 후 배너 숨김", wait_js(w, "document.querySelector('#banner').hidden", 5),
+              js(w, "document.querySelector('#banner').innerText"))
 
         # 2) 재생목록 전환 → 첫 항목만 m4a로 받기
         js(w, "document.querySelector('#btn-whole-pl').click()")

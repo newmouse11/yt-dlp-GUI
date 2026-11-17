@@ -35,6 +35,13 @@ CHILD_ENCODING = locale.getencoding()
 # UI가 폴링으로 읽어 가는 설치 진행 상태
 progress = {"active": False, "label": "", "percent": 0, "error": None}
 _ensure_lock = threading.Lock()
+_ytdlp_ready = threading.Event()  # 설치 중에 들어온 조회를 yt-dlp가 생길 때까지 붙잡아 둔다
+
+
+def wait_ytdlp(timeout: float) -> None:
+    """첫 실행 설치 중이면 yt-dlp가 준비될 때까지 기다린다 (ffmpeg까지 기다리지는 않음)."""
+    if not ytdlp_path() and progress["active"]:
+        _ytdlp_ready.wait(timeout)
 
 
 def ytdlp_path() -> str | None:
@@ -119,6 +126,7 @@ def ensure(on_done=None) -> None:
     if not _ensure_lock.acquire(blocking=False):
         return  # 이미 진행 중
     progress.update(active=True, error=None)
+    _ytdlp_ready.clear()
     try:
         os.makedirs(BIN_DIR, exist_ok=True)
         if not ytdlp_path():
@@ -127,6 +135,7 @@ def ensure(on_done=None) -> None:
                 os.path.join(BIN_DIR, "yt-dlp.exe"), "yt-dlp 내려받는 중",
             )
             log.info("yt-dlp 설치 완료")
+        _ytdlp_ready.set()
         if not ffmpeg_path():
             zip_path = os.path.join(BIN_DIR, FFMPEG_ZIP)
             _download_verified(
@@ -149,6 +158,7 @@ def ensure(on_done=None) -> None:
         progress["error"] = f"{type(e).__name__}: {e}"
     finally:
         progress["active"] = False
+        _ytdlp_ready.set()  # 실패해도 기다리던 조회를 풀어 줘야 '설치 안 됨' 오류라도 표시된다
         _ensure_lock.release()
         if on_done:
             on_done()
