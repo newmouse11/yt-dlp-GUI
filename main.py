@@ -14,7 +14,7 @@ import webview
 import binaries
 from downloader import Queue, fetch_info
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.1"
 CONFIG_PATH = os.path.join(binaries.APP_DIR, "config.json")
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
 FMT_RE = re.compile(r"^(v\d{3,4}|mp3|m4a)$")
