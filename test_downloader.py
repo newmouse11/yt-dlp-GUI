@@ -62,6 +62,12 @@ def main() -> None:
     p = fetch_info(PLAYLIST)
     check("재생목록 조회", p.get("type") == "playlist" and len(p["entries"]) > 5, p.get("error"))
     print(f"     재생목록 '{p['title']}' {len(p['entries'])}개, 제외 {p['skipped']}개")
+    # 열 수 없는 SSLKEYLOGFILE이 있어도 조회돼야 한다 (사용자 PC에서 실제로 난 오류)
+    os.environ["SSLKEYLOGFILE"] = os.environ.get("SystemRoot", r"C:\Windows")  # 폴더라 append로 못 연다
+    k = fetch_info(VIDEO)
+    del os.environ["SSLKEYLOGFILE"]
+    check("열 수 없는 SSLKEYLOGFILE에도 조회", k.get("type") == "video", k.get("error"))
+
     bad = fetch_info("https://example.com/not-a-video")
     check("잘못된 주소 오류", "error" in bad, bad)
     print("     오류 문구:", bad["error"][:100])

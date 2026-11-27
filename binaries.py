@@ -62,6 +62,10 @@ def child_env() -> dict:
     env = dict(os.environ)
     # PyInstaller 앱이 다른 PyInstaller 앱(yt-dlp.exe)을 띄울 때 공식 문서가 권장하는 환경 리셋
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    # TLS 키 기록용 디버깅 변수. 일부 PC는 열 수 없는 경로(\\?\Volume{…}\virtual_file.log)로
+    # 넣어 두는데, 그러면 yt-dlp의 모든 연결이 PermissionError로 실패해
+    # "Unable to handle request: 2 unexpected error(s)"가 된다 (v0.2.0 사용자 로그로 확인)
+    env.pop("SSLKEYLOGFILE", None)
     return env
 
 
