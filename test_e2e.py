@@ -1,6 +1,7 @@
 """E2E: 숨김 pywebview 창에 실제 UI를 띄우고 JS로 조작 (py test_e2e.py <작업폴더>).
 
 작업폴더를 LOCALAPPDATA·저장 폴더로 써서 실제 사용자 데이터는 건드리지 않는다.
+시스템 클립보드는 건드리지 않도록 붙여넣기는 paste 이벤트로 흉내 낸다.
 """
 import json
 import os
@@ -23,8 +24,8 @@ import binaries  # noqa: E402
 import main  # noqa: E402
 
 MIXED = "https://www.youtube.com/watch?v=cGjgCLuyAro&list=PLTLKMoAcZh5I&index=13"
-VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
-BIG = "https://www.youtube.com/watch?v=LXb3EKWsInQ"  # 4K — 일시정지 클릭 검사용
+VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"  # 19초, 영어·독일어 자막
+BIG = "https://www.youtube.com/watch?v=LXb3EKWsInQ"    # 4K — 일시정지 클릭 검사용
 results: list[tuple[str, bool, str]] = []
 
 
@@ -49,104 +50,117 @@ def wait_js(w, cond, timeout=120, step=0.5):
     return False
 
 
+def paste(w, text):
+    js(w, f"""(() => {{ const dt = new DataTransfer(); dt.setData('text/plain', {json.dumps(text)});
+        document.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true}})); }})()""")
+
+
+def open_dialog(w, url, timeout=180):
+    paste(w, url)
+    return wait_js(w, "!document.querySelector('#dlg').hidden", timeout)
+
+
 def scenario(w: webview.Window):
     try:
-        check("첫 화면: 빈 상태 표시", wait_js(w, "!document.querySelector('#empty').hidden", 30))
+        check("첫 화면: 빈 상태", wait_js(w, "!document.querySelector('#empty').hidden", 30))
         fresh = binaries.progress["active"]  # 새 폴더면 지금 첫 실행 설치 중
 
-        # 1) Ctrl+V 붙여넣기 이벤트 → 모달 열림 + 자동 조회 (섞인 주소)
-        #    첫 실행 설치 중이어도 오류 없이 yt-dlp 설치를 기다렸다가 조회돼야 한다
-        js(w, f"""(() => {{ const dt = new DataTransfer(); dt.setData('text/plain', {json.dumps(MIXED)});
-            document.dispatchEvent(new ClipboardEvent('paste', {{clipboardData: dt, bubbles: true}})); }})()""")
-        check("붙여넣기 → 모달 열림", wait_js(w, "!document.querySelector('#modal').hidden", 5))
-        check("섞인 주소 → 영상 미리보기", wait_js(w, "!!document.querySelector('#panel-body .preview')", 120),
-              js(w, "document.querySelector('#panel-body').innerText"))
-        check("재생목록 전체 보기 버튼", js(w, "!!document.querySelector('#btn-whole-pl')"))
-        check("화질 선택지 표시", js(w, "document.querySelectorAll('.fmt').length >= 3"),
-              js(w, "document.querySelector('#fmt-pills').innerText"))
-        print(f"     (첫 실행 설치 중 조회 경로 검사: {fresh})", flush=True)
+        # 1) Ctrl+V(섞인 주소) → '분석 중' 줄 → 영상 다운로드 창 (설치 중이어도 기다렸다 열림)
+        paste(w, MIXED)
+        check("분석 중 줄 표시", wait_js(w, "!!document.querySelector('#pending .row.pending')", 3))
+        check("영상 다운로드 창", wait_js(w, "!document.querySelector('#dlg').hidden", 180),
+              js(w, "document.querySelector('#err-text').textContent"))
+        print(f"     (첫 실행 설치 중 조회 경로: {fresh})", flush=True)
+        check("분석 중 줄 사라짐", js(w, "document.querySelector('#pending').children.length === 0"))
+        check("화질별 예상 용량", js(w, "[...document.querySelectorAll('.q-size')].some(s => s.textContent.includes('MB'))"),
+              js(w, "document.querySelector('#qlist').innerText"))
+        check("재생목록 전체 보기 링크", js(w, "!!document.querySelector('#btn-whole-pl')"))
 
-        # 깨끗한 PC에서는 ffmpeg(200MB)까지 받으므로 넉넉히 기다린다 — 배너는 HTML에서 처음부터
-        # hidden이라 DOM만 보면 첫 폴링 전에 통과해 버리므로 실제 설치 상태로 판단
-        end = time.time() + 900
+        # 2) 재생목록 전환 → 첫 항목만 오디오(M4A)
+        js(w, "document.querySelector('#btn-whole-pl').click()")
+        check("재생목록 창", wait_js(w, "document.querySelectorAll('.pl-list input').length > 5", 120))
+        js(w, """(() => { const all = document.querySelector('#pl-all'); all.checked = false;
+            all.dispatchEvent(new Event('change'));
+            const first = document.querySelector('.pl-list input'); first.checked = true;
+            first.dispatchEvent(new Event('change', {bubbles: true}));
+            const k = document.querySelector('#sel-kind'); k.value = 'audio'; k.dispatchEvent(new Event('change'));
+            document.querySelector('#sel-ext').value = 'm4a'; })()""")
+        check("선택 개수 표시", js(w, "document.querySelector('#pl-count').textContent.includes('1개 선택')"),
+              js(w, "document.querySelector('#pl-count').textContent"))
+        js(w, "document.querySelector('#dlg-ok').click()")
+        check("추가 토스트", wait_js(w, "[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('1개'))", 10))
+        check("창 닫힘 + 줄 생성", wait_js(w, "document.querySelector('#dlg').hidden && document.querySelectorAll('#list .row').length === 1", 5))
+
+        end = time.time() + 900  # 깨끗한 PC면 ffmpeg(200MB)까지 받는다
         while time.time() < end and (binaries.progress["active"] or not binaries.ffmpeg_path()):
             time.sleep(1)
         check("첫 실행 설치 완료", binaries.ytdlp_path() and binaries.ffmpeg_path(), binaries.progress)
-        check("설치 후 배너 숨김", wait_js(w, "document.querySelector('#banner').hidden", 5),
-              js(w, "document.querySelector('#banner').innerText"))
-
-        # 2) 재생목록 전환 → 첫 항목만 m4a로 받기
-        js(w, "document.querySelector('#btn-whole-pl').click()")
-        check("재생목록 항목 표시", wait_js(w, "document.querySelectorAll('.pl-list input').length > 5", 120),
-              js(w, "document.querySelector('#panel-body').innerText"))
-        js(w, """(() => { const all = document.querySelector('#pl-all'); all.checked = false;
-            all.dispatchEvent(new Event('change'));
-            document.querySelector('.pl-list input').checked = true;
-            document.querySelector('.fmt[data-f=m4a]').click();
-            document.querySelector('#btn-download').click(); })()""")
-        check("대기열 추가 토스트", wait_js(w, "[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('1개'))", 10),
-              js(w, "document.querySelector('#toasts').innerText"))
-        check("모달 닫힘", js(w, "document.querySelector('#modal').hidden"))
-        check("카드 생성", wait_js(w, "document.querySelectorAll('.card').length === 1", 5))
-        check("m4a 완료", wait_js(w, "!!document.querySelector('.card.done')", 300),
+        check("M4A 완료", wait_js(w, "!!document.querySelector('#list .row.done')", 300),
               js(w, "document.querySelector('#list').innerText"))
 
-        # 3) 단일 영상 360p — 진행 중 진행률 막대가 움직이는지
-        js(w, f"openModal({json.dumps(VIDEO)})")
-        check("영상 조회", wait_js(w, "!!document.querySelector('#panel-body .preview')", 120))
-        # 이 영상은 최고 240p — 첫 번째 영상 화질 버튼을 고른다 (직전 선택 m4a가 기억돼 있음)
-        check("직전 선택(m4a) 기억", js(w, "document.querySelector('.fmt.active').dataset.f === 'm4a'"))
-        js(w, "document.querySelector('.fmt[data-f^=v]').click(); document.querySelector('#btn-download').click()")
-        check("영상 다운로드 완료", wait_js(w, "document.querySelectorAll('.card.done').length === 2", 300),
+        # 3) 영상 + 자막: 직전 선택(오디오)이 기억돼 있는지 보고, 영상·영어 자막으로 바꿔 받기
+        check("영상 창(자막 있는 영상)", open_dialog(w, VIDEO))
+        check("직전 선택(오디오 M4A) 기억", js(w, "document.querySelector('#sel-kind').value === 'audio' && document.querySelector('#sel-ext').value === 'm4a'"))
+        check("자막 언어 목록", js(w, "!!document.querySelector('#sel-sub option[value=en]')"),
+              js(w, "document.querySelector('.sub-row')?.innerText"))
+        js(w, """(() => { const k = document.querySelector('#sel-kind'); k.value = 'video'; k.dispatchEvent(new Event('change'));
+            document.querySelector('#qlist input').click();
+            const c = document.querySelector('#chk-sub'); c.checked = true; c.dispatchEvent(new Event('change'));
+            document.querySelector('#sel-sub').value = 'en';
+            document.querySelector('#dlg-ok').click(); })()""")
+        check("영상+자막 완료", wait_js(w, "document.querySelectorAll('#list .row.done').length === 2", 300),
               js(w, "document.querySelector('#list').innerText"))
         names = os.listdir(OUT) if os.path.isdir(OUT) else []
-        check("저장 폴더에 m4a·mp4", any(n.endswith(".m4a") for n in names) and any(n.endswith(".mp4") for n in names), names)
-        check("파일명에 [영상ID] 유지", all(n.rsplit(".", 1)[0].endswith("]") for n in names), names)
+        check("m4a·mp4·en.srt 생성", any(n.endswith(".m4a") for n in names) and any(n.endswith(".mp4") for n in names)
+              and any(n.endswith(".en.srt") for n in names), names)
+        check("최근 항목이 맨 위", js(w, "document.querySelector('#list .row .r-title').textContent.includes('zoo')"))
+        check("완료 줄에 '폴더에서 보기'", js(w, "!!document.querySelector('#list .row.done [data-act=reveal]')"))
 
-        # 3-1) 다운로드 중 버튼 클릭이 씹히지 않는지 — 버튼을 잡고 1.5초(폴링 3회) 뒤 클릭
-        js(w, f"openModal({json.dumps(BIG)})")
-        check("큰 영상 조회", wait_js(w, "!!document.querySelector('#panel-body .preview')", 120))
-        js(w, "document.querySelector('.fmt[data-f^=v]').click(); document.querySelector('#btn-download').click()")
-        check("큰 영상 진행률 표시", wait_js(w, """[...document.querySelectorAll('.card.downloading .progress i')]
+        # 4) 다운로드 중 버튼 클릭이 씹히지 않는지 — 버튼을 잡고 1.5초(폴링 3회) 뒤 클릭
+        check("큰 영상 창", open_dialog(w, BIG))
+        js(w, """(() => { document.querySelector('#qlist input').click();
+            const c = document.querySelector('#chk-sub'); if (c) c.checked = false;  // 자막 없는 영상이면 체크박스가 없다
+            document.querySelector('#dlg-ok').click(); })()""")
+        check("진행률 표시", wait_js(w, """[...document.querySelectorAll('#list .row.downloading .bar i')]
             .some(i => parseFloat(i.style.width) > 0)""", 120), js(w, "document.querySelector('#list').innerText"))
-        js(w, "window.__btn = document.querySelector('.card.downloading [data-act=pause]')")
+        js(w, "window.__btn = document.querySelector('#list .row.downloading [data-act=pause]')")
         time.sleep(1.5)
         js(w, "window.__btn.click()")
-        check("1.5초 뒤 일시정지 클릭 반영", wait_js(w, "!!document.querySelector('.card.paused')", 5),
-              js(w, "document.querySelector('#list').innerText"))
-        js(w, "window.__btn = document.querySelector('.card.paused [data-act=remove]')")
+        check("1.5초 뒤 일시정지 클릭 반영", wait_js(w, "!!document.querySelector('#list .row.paused')", 5))
+        js(w, "window.__btn = document.querySelector('#list .row.paused [data-act=remove]')")
         time.sleep(1.5)
         js(w, "window.__btn.click()")
-        check("제거 클릭 반영", wait_js(w, "!document.querySelector('.card.paused')", 5))
+        check("제거 클릭 반영", wait_js(w, "!document.querySelector('#list .row.paused')", 5))
 
-        # 4) 필터·지우기
-        js(w, "document.querySelector('.pill[data-filter=active]').click()")
-        check("진행 중 필터 → 0개", wait_js(w, "document.querySelectorAll('.card').length === 0", 3))
-        js(w, "document.querySelector('.pill[data-filter=all]').click()")
+        # 5) 오류 창 — 문구가 보이고 선택(복사) 가능, Esc로 닫힘
+        paste(w, "https://example.com/not-a-video")
+        check("오류 창", wait_js(w, "!document.querySelector('#err-dlg').hidden", 120))
+        check("오류 문구 선택 가능", js(w, "getComputedStyle(document.querySelector('#err-text')).userSelect === 'text'"))
+        js(w, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
+        check("Esc로 닫기", wait_js(w, "document.querySelector('#err-dlg').hidden", 3))
+
+        # 6) 스마트 모드 — 켜면 창 없이 MP3로 바로 추가
+        js(w, """(() => { document.querySelector('#btn-smart').click();
+            document.querySelector('#smart-on').checked = true;
+            const k = document.querySelector('#smart-kind'); k.value = 'mp3'; k.dispatchEvent(new Event('change'));
+            document.querySelector('#smart-ok').click(); })()""")
+        check("스마트 모드 켜짐 표시", wait_js(w, "document.querySelector('#btn-smart').classList.contains('on')", 5))
+        before = len(main_api._queue.jobs)
+        paste(w, VIDEO)
+        check("스마트 모드: 창 없이 추가", wait_js(w, f"document.querySelectorAll('#list .row').length > {before}", 120)
+              and js(w, "document.querySelector('#dlg').hidden"))
+        check("스마트 모드 형식 MP3", main_api._queue.jobs[-1].fmt == "mp3", main_api._queue.jobs[-1].fmt)
+        check("스마트 모드 MP3 완료", wait_js(w, "document.querySelectorAll('#list .row.done').length === 3", 300))
+        js(w, """(() => { document.querySelector('#btn-smart').click(); document.querySelector('#smart-on').checked = false;
+            document.querySelector('#smart-ok').click(); })()""")
+        check("스마트 모드 끔", wait_js(w, "!document.querySelector('#btn-smart').classList.contains('on')", 5))
+
+        # 7) 완료 항목 지우기 → 빈 상태, 설정 창 버전
         js(w, "document.querySelector('#btn-clear').click()")
         check("완료 항목 지우기 → 빈 상태", wait_js(w, "!document.querySelector('#empty').hidden", 5))
-
-        # 5) 오류 경로 — 문구가 보이고 선택(복사) 가능
-        js(w, "openModal('https://example.com/not-a-video')")
-        check("오류 표시", wait_js(w, "!!document.querySelector('.hint.err')", 120))
-        check("오류 텍스트 선택 가능", js(w, "getComputedStyle(document.querySelector('.hint.err')).userSelect === 'text'"))
-        js(w, "document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'}))")
-        check("Esc로 모달 닫기", wait_js(w, "document.querySelector('#modal').hidden", 3))
-
-        # 6) 설정 — 버전 표시
         js(w, "document.querySelector('#btn-settings').click()")
-        check("설정 열림 + 버전", wait_js(w, "document.querySelector('#versions').textContent.includes('yt-dlp 20')", 30),
+        check("설정 창 + 버전", wait_js(w, "document.querySelector('#versions').textContent.includes('yt-dlp 20')", 30),
               js(w, "document.querySelector('#versions').textContent"))
-        js(w, "document.querySelector('#settings-modal').dispatchEvent(new MouseEvent('mousedown', {bubbles: true}))")
-
-        # 7) 창 크기 조절 API
-        js(w, "pywebview.api.win_resize(900, 600)")
-        check("창 크기 조절", wait_js(w, "Math.abs(window.innerWidth - 900) <= 20 && Math.abs(window.innerHeight - 600) <= 20", 5),
-              js(w, "[window.innerWidth, window.innerHeight]"))
-        js(w, "pywebview.api.win_resize(100, 100)")
-        time.sleep(1)
-        check("최소 크기 제한", js(w, "window.innerWidth >= 700 && window.innerHeight >= 460"),
-              js(w, "[window.innerWidth, window.innerHeight]"))
 
         errs = js(w, "window.__errors || []")
         check("JS 런타임 오류 없음", not errs, errs)
@@ -156,15 +170,19 @@ def scenario(w: webview.Window):
         w.destroy()
 
 
+main_api: main.Api
+
+
 def main_test():
-    api = main.Api()
-    w = webview.create_window("e2e", main.resource("ui/index.html"), js_api=api,
-                              width=1000, height=680, min_size=(720, 480), frameless=True, hidden=True)
-    api._window = w
-    w.events.loaded += lambda: js(w, "window.__errors = []; window.addEventListener('error', e => __errors.push(String(e.message)))")
+    global main_api
     main.setup_logging()
+    main_api = main.Api()
+    w = webview.create_window("e2e", main.resource("ui/index.html"), js_api=main_api,
+                              width=1000, height=680, min_size=(720, 480), hidden=True)
+    main_api._window = w
+    w.events.loaded += lambda: js(w, "window.__errors = []; window.addEventListener('error', e => __errors.push(String(e.message)))")
     webview.start(lambda: threading.Thread(target=scenario, args=(w,), daemon=True).start())
-    api._queue.shutdown()
+    main_api._queue.shutdown()
     failed = [r for r in results if not r[1]]
     print(f"\n{len(results) - len(failed)}/{len(results)} 통과", flush=True)
     sys.exit(1 if failed else 0)

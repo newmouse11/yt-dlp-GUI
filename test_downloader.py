@@ -57,6 +57,8 @@ def main() -> None:
     # 조회
     v = fetch_info(VIDEO)
     check("영상 조회", v.get("type") == "video" and v["heights"], v)
+    check("화질별 예상 용량", all(q["size"] for q in v["qualities"]), v["qualities"])
+    check("자막 목록 (en)", any(s["code"] == "en" for s in v["subtitles"]), v["subtitles"])
     m = fetch_info(MIXED)
     check("섞인 주소 → 영상 + 재생목록 링크", m.get("type") == "video" and m.get("playlist_url"), m)
     p = fetch_info(PLAYLIST)
@@ -92,6 +94,15 @@ def main() -> None:
         check(f"다운로드 {fmt}", s["status"] == "done", s)
     files = os.listdir(out_dir)
     check("파일 생성", any(f.endswith(".mp4") for f in files) and any(f.endswith(".mp3") for f in files), files)
+
+    # 자막(.srt) + 받은 파일 찾기('폴더에서 보기'용)
+    sid = q.add(VIDEO, "v144", out_dir, {"title": v["title"], "id": v["id"]}, sub_lang="en")
+    s = wait(q, sid)
+    check("자막 포함 다운로드", s["status"] == "done", s)
+    check(".en.srt 생성", any(f.endswith(".en.srt") for f in os.listdir(out_dir)), os.listdir(out_dir))
+    path, folder = q.job_location(sid)
+    check("받은 파일 경로 찾기", path and path.endswith(".mp4") and os.path.isfile(path), (path, folder))
+    check("받은 크기 집계", s["size"] > 0, s)
 
     # 일시정지 → 이어받기 → 취소
     jid = q.add(BIG, "v2160", out_dir, {"title": "big"})  # 회선이 빨라도 수 초 안에 끝나지 않을 크기

@@ -5,19 +5,23 @@ import logging
 import logging.handlers
 import os
 import re
+import subprocess
 import sys
 import threading
 import webbrowser
+import winreg
 
 import webview
 
 import binaries
+import winclip
 from downloader import Queue, fetch_info
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.3.0"
 CONFIG_PATH = os.path.join(binaries.APP_DIR, "config.json")
 DEFAULT_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
 FMT_RE = re.compile(r"^(v\d{3,4}|mp3|m4a)$")
+SUB_LANG_RE = re.compile(r"^[A-Za-z0-9_-]{1,24}$")
 WEBVIEW2_URL = "https://developer.microsoft.com/microsoft-edge/webview2/"
 
 log = logging.getLogger("ytdlp-gui")
@@ -39,6 +43,9 @@ def load_settings() -> dict:
         s = {}
     s.setdefault("out_dir", DEFAULT_DIR)
     s.setdefault("max_concurrent", 2)
+    # 스마트 모드: 링크를 붙여넣으면 창 없이 이 설정으로 바로 받는다
+    s["smart"] = {"enabled": False, "fmt": "v1080", "sub_lang": None, "out_dir": s["out_dir"],
+                  **(s.get("smart") or {})}
     return s
 
 
@@ -51,6 +58,25 @@ def save_settings(s: dict) -> None:
         log.exception("설정 저장 실패: %s", CONFIG_PATH)
 
 
+# ─── JS에서 넘어온 값 검증 (형식·자막 언어는 yt-dlp 인자로 들어간다) ───
+def _check_fmt(fmt) -> str:
+    if not isinstance(fmt, str) or not FMT_RE.match(fmt):
+        raise ValueError(f"잘못된 형식: {fmt!r}")
+    return fmt
+
+
+def _check_sub(lang) -> str | None:
+    if not lang:
+        return None
+    if not isinstance(lang, str) or not SUB_LANG_RE.match(lang):
+        raise ValueError(f"잘못된 자막 언어: {lang!r}")
+    return lang
+
+
+def _check_dir(path, fallback: str) -> str:
+    return path if isinstance(path, str) and os.path.isabs(path) else fallback
+
+
 class Api:
     def __init__(self):
         # 밑줄 접두사: pywebview가 js_api 속성을 JS로 재귀 노출하지 않게
@@ -58,7 +84,6 @@ class Api:
         self._settings = load_settings()
         self._queue.max_concurrent = int(self._settings["max_concurrent"])
         self._window: webview.Window | None = None
-        self._maximized = False
         # 없는 바이너리는 백그라운드에서 받기 시작 (그동안 추가된 작업은 끝난 뒤 자동 시작)
         if not (binaries.ytdlp_path() and binaries.ffmpeg_path()):
             self.retry_bootstrap()
@@ -74,22 +99,53 @@ class Api:
     def app_info(self):
         return {"app": APP_VERSION, "ytdlp": binaries.ytdlp_version()}
 
+    def read_clipboard(self):
+        return winclip.read_text().strip()[:2048]
+
     # --- 메타데이터/대기열 ---
     def fetch_info(self, url):
         binaries.wait_ytdlp(timeout=600)  # 첫 실행 설치 중에 붙여넣어도 오류 대신 기다렸다 조회
         return fetch_info(str(url or ""))
 
-    def add_download(self, items, fmt):
-        """items: [{url,title,thumbnail,duration}], fmt: 'v1080'|'mp3'|'m4a'"""
-        if not isinstance(fmt, str) or not FMT_RE.match(fmt):
-            raise ValueError(f"잘못된 형식: {fmt!r}")
+    def _add(self, items, fmt: str, out_dir: str, sub_lang: str | None) -> int:
         n = 0
         for it in items or []:
             url = str((it or {}).get("url") or "")
             if url.startswith(("http://", "https://")):
-                self._queue.add(url, fmt, self._settings["out_dir"], it)
+                self._queue.add(url, fmt, out_dir, it, sub_lang)
                 n += 1
         return n
+
+    def add_download(self, items, fmt, out_dir=None, sub_lang=None):
+        """다운로드 창에서 고른 대로 대기열에 넣는다. 고른 저장 위치는 다음에도 기본값이 된다."""
+        fmt, sub_lang = _check_fmt(fmt), _check_sub(sub_lang)
+        out_dir = _check_dir(out_dir, self._settings["out_dir"])
+        if out_dir != self._settings["out_dir"]:
+            self._settings["out_dir"] = out_dir
+            save_settings(self._settings)
+        return self._add(items, fmt, out_dir, sub_lang)
+
+    def smart_add(self, url):
+        """스마트 모드: 창 없이 저장해 둔 설정으로 바로 추가 (재생목록이면 전부)."""
+        binaries.wait_ytdlp(timeout=600)
+        info = fetch_info(str(url or ""))
+        if info.get("error"):
+            return info
+        s = self._settings["smart"]
+        items = info["entries"] if info["type"] == "playlist" else [info]
+        n = self._add(items, s["fmt"], _check_dir(s["out_dir"], self._settings["out_dir"]), s["sub_lang"])
+        return {"added": n, "title": info.get("title")}
+
+    def set_smart(self, cfg):
+        cfg = cfg or {}
+        self._settings["smart"] = {
+            "enabled": bool(cfg.get("enabled")),
+            "fmt": _check_fmt(cfg.get("fmt")),
+            "sub_lang": _check_sub(cfg.get("sub_lang")),
+            "out_dir": _check_dir(cfg.get("out_dir"), self._settings["out_dir"]),
+        }
+        save_settings(self._settings)
+        return self._settings["smart"]
 
     def pause(self, job_id): self._queue.pause(job_id)
     def resume(self, job_id): self._queue.resume(job_id)
@@ -97,12 +153,25 @@ class Api:
     def remove(self, job_id): self._queue.remove(job_id)
     def clear_finished(self): self._queue.clear_finished()
 
+    def reveal(self, job_id):
+        """받은 파일을 탐색기에서 선택해 보여 준다. 파일을 못 찾으면 저장 폴더를 연다."""
+        path, folder = self._queue.job_location(job_id)
+        if path:
+            subprocess.Popen(f'explorer /select,"{path}"')  # Windows 파일명엔 " 가 없다
+        elif folder:
+            os.makedirs(folder, exist_ok=True)
+            os.startfile(folder)  # noqa: S606
+
     # --- 설정 ---
-    def choose_folder(self):
-        sel = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=self._settings["out_dir"])
-        if sel:
-            self._settings["out_dir"] = sel[0]
-            save_settings(self._settings)
+    def choose_folder(self, initial=None):
+        """폴더 선택 창. 고른 경로를 돌려줄 뿐 저장은 호출한 쪽이 정한다."""
+        start = _check_dir(initial, self._settings["out_dir"])
+        sel = self._window.create_file_dialog(webview.FileDialog.FOLDER, directory=start)
+        return sel[0] if sel else None
+
+    def set_out_dir(self, path):
+        self._settings["out_dir"] = _check_dir(path, self._settings["out_dir"])
+        save_settings(self._settings)
         return self._settings["out_dir"]
 
     def set_max_concurrent(self, n):
@@ -127,33 +196,27 @@ class Api:
     def retry_bootstrap(self):
         threading.Thread(target=binaries.ensure, args=(self._queue._pump,), daemon=True).start()
 
-    # --- 창 조작 (트래픽 라이트 버튼, 크기 조절 손잡이) ---
-    def win_close(self): self._window.destroy()
-    def win_minimize(self): self._window.minimize()
-
-    def win_maximize(self):
-        # 초록 버튼: 최대화 ↔ 원래 크기 토글
-        if self._maximized:
-            self._window.restore()
-        else:
-            self._window.maximize()
-        self._maximized = not self._maximized
-
-    def win_resize(self, width, height):
-        # 테두리 없는 창은 Windows가 가장자리 크기 조절을 제공하지 않아 직접 처리 (논리 픽셀)
-        self._window.resize(max(720, int(width)), max(480, int(height)))
-
 
 def resource(rel: str) -> str:
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
 
 
+def system_dark() -> bool:
+    """창이 뜨는 순간의 배경색을 테마에 맞춰 흰/검 번쩍임을 줄인다."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 0
+    except OSError:
+        return False
+
+
 def webview2_missing(window: webview.Window | None = None) -> None:
-    """WebView2가 없거나 망가졌을 때 — 닫기 버튼도 없는 빈 창 대신 안내하고 종료."""
+    """WebView2가 없거나 망가졌을 때 — 빈 창 대신 안내하고 종료."""
     log.error("WebView2 런타임 사용 불가 — 안내 후 종료")
     if window:
-        window.hide()  # 빈 검은 창이 안내 창을 가리지 않게 (샌드박스에서 실제로 가려짐)
+        window.hide()  # 빈 창이 안내 창을 가리지 않게 (샌드박스에서 실제로 가려짐)
     # MB_YESNO | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST
     flags, idyes = 0x4 | 0x10 | 0x10000 | 0x40000, 6
     text = ("화면 표시에 필요한 Microsoft Edge WebView2 런타임을 찾을 수 없습니다.\n\n"
@@ -194,7 +257,7 @@ def main():
     window = webview.create_window(
         "다운로더", resource("ui/index.html"), js_api=api,
         width=1000, height=680, min_size=(720, 480),
-        frameless=True, easy_drag=False, background_color="#1C1C1E",
+        background_color="#1E1F22" if system_dark() else "#FFFFFF",
     )
     api._window = window
     logging.getLogger("pywebview").addHandler(WebView2FailWatch(window))

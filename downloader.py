@@ -18,8 +18,9 @@ log = logging.getLogger(__name__)
 PROGRESS_TMPL = (
     "download:PROG|%(progress.status)s|%(progress.downloaded_bytes)s"
     "|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s"
-    "|%(progress.speed)s|%(progress.eta)s"
+    "|%(progress.speed)s|%(progress.eta)s|%(progress.filename)s"  # Windows 파일명엔 | 가 없다
 )
+SUB_EXTS = (".vtt", ".srt", ".ttml", ".srv1", ".srv2", ".srv3", ".json3", ".ass", ".lrc")
 FORMATS_RE = re.compile(r"^\[info\] .*Downloading \d+ format\(s\): (\S+)")
 # 일시적인 네트워크 문제로 보이는 오류 — 한 번 더 시도할 가치가 있다
 RETRYABLE = ("Unable to handle request", "timed out", "Connection", "HTTP Error 5", "Temporary failure")
@@ -102,6 +103,7 @@ def fetch_info(url: str) -> dict:
             thumbs = e.get("thumbnails") or []
             entries.append({
                 "url": u,
+                "id": e.get("id"),
                 "title": e.get("title") or "(제목 없음)",
                 "duration": e.get("duration"),
                 "thumbnail": thumbs[-1].get("url") if thumbs else None,
@@ -115,21 +117,80 @@ def fetch_info(url: str) -> dict:
     if info.get("is_live"):
         return {"error": "진행 중인 라이브 방송은 받을 수 없습니다"}
 
+    formats = info.get("formats") or []
+    duration = info.get("duration")
     heights = sorted(
-        {f["height"] for f in info.get("formats") or []
-         if f.get("height") and f.get("vcodec") not in (None, "none")},
+        {f["height"] for f in formats if f.get("height") and f.get("vcodec") not in (None, "none")},
         reverse=True,
     )
+    audio = _best_audio(formats)
+    audio_size = _size(audio, duration) if audio else None
     return {
         "type": "video",
+        "id": info.get("id"),
         "url": info.get("webpage_url") or video_url,
         "title": info.get("title"),
-        "duration": info.get("duration"),
+        "duration": duration,
         "thumbnail": info.get("thumbnail"),
         "uploader": info.get("uploader") or info.get("channel"),
         "heights": heights,
+        "qualities": [{"height": h, "size": _video_size(formats, h, duration, audio_size)} for h in heights],
+        "audio_size": audio_size,
+        "subtitles": _subtitle_options(info),
         "playlist_url": playlist_url,
     }
+
+
+# ─── 화질별 예상 용량 ───
+# yt-dlp가 실제로 고를 형식(_format_args의 -S res,+codec:avc:m4a)을 흉내 내 대략 계산한다.
+
+def _size(f: dict, duration) -> float | None:
+    """파일 크기. 없으면(HLS 등) 비트레이트 × 길이로 추정."""
+    s = f.get("filesize") or f.get("filesize_approx")
+    if not s and f.get("tbr") and duration:
+        s = f["tbr"] * 1000 / 8 * duration
+    return s or None
+
+
+def _best_audio(formats: list[dict]) -> dict | None:
+    audio = [f for f in formats if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    m4a = [f for f in audio if str(f.get("acodec")).startswith("mp4a")] or audio
+    return max(m4a, key=lambda f: f.get("abr") or f.get("tbr") or 0, default=None)
+
+
+def _video_size(formats: list[dict], height: int, duration, audio_size) -> float | None:
+    vids = [f for f in formats if f.get("height") == height and f.get("vcodec") not in (None, "none")]
+    avc = [f for f in vids if str(f.get("vcodec")).startswith("avc1")]
+    pool = avc or vids
+    # 크기가 적힌 형식(https)이 실제 선택되는 쪽 — HLS보다 우선
+    known = [f for f in pool if f.get("filesize") or f.get("filesize_approx")] or pool
+    best = max(known, key=lambda f: f.get("tbr") or 0, default=None)
+    if not best:
+        return None
+    size = _size(best, duration)
+    if size and best.get("acodec") in (None, "none") and audio_size:
+        size += audio_size  # 영상만 있는 형식이면 오디오가 합쳐진다
+    return size
+
+
+# ─── 자막 ───
+LANG_NAMES = {"ko": "한국어", "en": "영어", "ja": "일본어", "zh-Hans": "중국어(간체)",
+              "zh-Hant": "중국어(번체)", "es": "스페인어", "fr": "프랑스어", "de": "독일어"}
+
+
+def _subtitle_options(info: dict) -> list[dict]:
+    """수동 자막 + 자동 생성 원본 + (없으면) 한국어 자동 번역. 자동 번역 150여 개 언어는 생략."""
+    subs = {k: v for k, v in (info.get("subtitles") or {}).items() if k != "live_chat"}
+    auto = info.get("automatic_captions") or {}
+    opts = [{"code": k, "name": LANG_NAMES.get(k) or (v[0].get("name") if v else "") or k}
+            for k, v in subs.items()]
+    for k in auto:
+        if k.endswith("-orig"):
+            base = k.removesuffix("-orig")
+            opts.append({"code": k, "name": f"{LANG_NAMES.get(base, base)} (자동 생성)"})
+    if "ko" not in subs and "ko" in auto:
+        opts.append({"code": "ko", "name": "한국어 (자동 번역)"})
+    return opts
 
 
 def _format_args(fmt: str) -> list[str]:
@@ -142,13 +203,22 @@ def _format_args(fmt: str) -> list[str]:
             "-S", f"res:{h},+codec:avc:m4a", "--merge-output-format", "mp4"]
 
 
+def _subtitle_args(sub_lang: str | None) -> list[str]:
+    if not sub_lang:
+        return []
+    # 수동 자막이 있으면 그것을, 없으면 자동 생성/번역 자막을 받아 .srt로 저장
+    return ["--write-subs", "--write-auto-subs", "--sub-langs", sub_lang, "--convert-subs", "srt"]
+
+
 class Job:
-    def __init__(self, url: str, fmt: str, out_dir: str, meta: dict):
+    def __init__(self, url: str, fmt: str, out_dir: str, meta: dict, sub_lang: str | None = None):
         self.id = uuid.uuid4().hex[:8]
         self.url = url
         self.fmt = fmt
         self.out_dir = out_dir
-        self.meta = meta          # title, thumbnail, duration
+        self.sub_lang = sub_lang
+        self.meta = meta          # id(영상), title, thumbnail, duration
+        self.size = 0.0           # 받은(받을) 스트림 크기 합 — 목록에 표시
         self.status = "queued"    # queued|downloading|processing|paused|done|error|canceled
         self.percent = 0.0
         self.speed = 0.0
@@ -162,10 +232,22 @@ class Job:
         return {
             "id": self.id, "url": self.url, "fmt": self.fmt,
             "title": self.meta.get("title"), "thumbnail": self.meta.get("thumbnail"),
-            "duration": self.meta.get("duration"),
+            "duration": self.meta.get("duration"), "size": self.size, "sub_lang": self.sub_lang,
             "status": self.status, "percent": round(self.percent, 1),
             "speed": self.speed, "eta": self.eta, "error": self.error,
         }
+
+    def output_path(self) -> str | None:
+        """받은 파일 경로 — 파일명 끝의 [영상ID]와 형식의 확장자로 찾는다.
+        같은 영상을 mp4·mp3로 따로 받았을 수 있어 확장자까지 맞춰야 한다."""
+        vid = self.meta.get("id")
+        if not vid or not os.path.isdir(self.out_dir):
+            return None
+        exts = (f".{self.fmt}",) if self.fmt in ("mp3", "m4a") else (".mp4", ".mkv", ".webm")
+        tag = f"[{vid}]"
+        cands = [os.path.join(self.out_dir, n) for n in os.listdir(self.out_dir)
+                 if tag in n and n.endswith(exts)]
+        return max(cands, key=os.path.getmtime, default=None)
 
 
 ACTIVE = ("downloading", "processing")
@@ -178,20 +260,25 @@ class Queue:
         self.lock = threading.Lock()
         self.max_concurrent = 2
 
-    def add(self, url: str, fmt: str, out_dir: str, meta: dict) -> str:
+    def add(self, url: str, fmt: str, out_dir: str, meta: dict, sub_lang: str | None = None) -> str:
         with self.lock:
             # 같은 영상·형식이 이미 진행 중이면 중복으로 받지 않는다 (같은 파일에 동시에 쓰는 충돌 방지)
             dup = next((j for j in self.jobs
                         if j.url == url and j.fmt == fmt and j.status in UNFINISHED), None)
             if dup:
                 return dup.id
-            job = Job(url, fmt, out_dir, meta)
+            job = Job(url, fmt, out_dir, meta, sub_lang)
             self.jobs.append(job)
         self._pump()
         return job.id
 
     def _find(self, job_id: str) -> Job | None:
         return next((j for j in self.jobs if j.id == job_id), None)
+
+    def job_location(self, job_id: str) -> tuple[str | None, str | None]:
+        """(받은 파일 경로, 저장 폴더) — '폴더에서 보기'용."""
+        j = self._find(job_id)
+        return (j.output_path(), j.out_dir) if j else (None, None)
 
     def _pump(self):
         """빈 자리가 있으면 대기 중인 작업을 시작."""
@@ -222,7 +309,7 @@ class Queue:
             # 제목만 150바이트로 잘라 Windows 경로 제한을 피하고 [id]는 항상 남긴다
             # (--trim-filenames는 폴더 경로까지 세어 깊은 폴더에서 제목과 id가 잘린다)
             "-o", os.path.join(job.out_dir, "%(title).150B [%(id)s].%(ext)s"),
-            *_format_args(job.fmt), job.url,
+            *_format_args(job.fmt), *_subtitle_args(job.sub_lang), job.url,
         ]
         ffmpeg = binaries.ffmpeg_path()
         if ffmpeg:
@@ -248,17 +335,22 @@ class Queue:
             target=lambda: [stderr_tail.append(l.rstrip()) for l in proc.stderr], daemon=True)
         reader.start()
 
-        n_streams, stream_idx = 1, 0
+        n_streams, stream_idx, done_bytes = 1, 0, 0.0
         for line in proc.stdout:
             line = line.strip()
             m = FORMATS_RE.match(line)
             if m:  # "135+140" → 영상·오디오 2개 스트림을 차례로 받는다
-                n_streams, stream_idx = m.group(1).count("+") + 1, 0
+                n_streams, stream_idx, done_bytes = m.group(1).count("+") + 1, 0, 0.0
                 continue
             if not line.startswith("PROG|"):
                 continue
-            _, st, done, total, est, speed, eta = (line.split("|") + [""] * 7)[:7]
+            _, st, done, total, est, speed, eta, fname = (line.split("|") + [""] * 8)[:8]
+            if fname.lower().endswith(SUB_EXTS):
+                continue  # 자막 파일 진행률은 영상 스트림 계산에서 뺀다
             stream_total = _num(total) or _num(est)
+            job.size = done_bytes + stream_total
+            if st == "finished":
+                done_bytes += stream_total
             frac = min(_num(done) / stream_total, 1.0) if stream_total else 0.0
             # ponytail: 영상 0~90%, 오디오 90~100%로 고정 배분 — 실제 크기 비율은 모름.
             #           정확히 하려면 조회 단계의 format filesize 합을 Job에 넘겨 바이트 기준으로 계산
@@ -282,6 +374,9 @@ class Queue:
         if job.status in ("paused", "canceled"):
             pass  # 사용자가 멈춘 것 — 상태 유지
         elif proc.returncode == 0:
+            path = job.output_path()
+            if path:  # 이미 받은 파일이면 진행률 줄이 없어 크기를 모른다 → 실제 파일 크기
+                job.size = os.path.getsize(path)
             job.status, job.percent, job.error = "done", 100.0, None
             log.info("다운로드 완료: %s (%s)", job.url, job.fmt)
         else:

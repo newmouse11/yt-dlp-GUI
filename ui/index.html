@@ -8,89 +8,142 @@
 </head>
 <body>
 
-<!-- 상단 바 (창 드래그 영역) -->
-<header class="topbar">
-  <div class="pywebview-drag-region drag-layer"></div>
-  <div class="traffic">
-    <button class="light red" id="btn-close" title="닫기"></button>
-    <button class="light yellow" id="btn-min" title="최소화"></button>
-    <button class="light green" id="btn-max" title="최대화"></button>
-  </div>
-  <span class="app-title">다운로더</span>
-  <div class="topbar-right">
-    <button class="icon-btn" id="btn-open-folder" title="다운로드 폴더 열기">
-      <svg viewBox="0 0 16 16" width="16" height="16"><path d="M1.5 4A1.5 1.5 0 0 1 3 2.5h3l1.5 2H13A1.5 1.5 0 0 1 14.5 6v6A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
-    </button>
-    <button class="icon-btn" id="btn-settings" title="설정">
-      <svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-    </button>
-    <button class="btn primary" id="btn-paste">＋ 링크 붙여넣기 <kbd>Ctrl V</kbd></button>
-  </div>
+<!-- 상단 도구 막대 -->
+<header class="toolbar">
+  <button class="tb-btn tb-primary" id="btn-paste" title="클립보드의 링크로 다운로드 (Ctrl+V)">
+    <svg viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="8.5" fill="currentColor" opacity=".18"/><path d="M10 5.5v9M5.5 10h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <span>링크 붙여넣기</span>
+  </button>
+  <button class="tb-btn" id="btn-smart" title="스마트 모드">
+    <svg viewBox="0 0 20 20" width="18" height="18"><path d="M10 2.5a5.5 5.5 0 0 0-3.2 10c.5.4.7.9.7 1.5v.5h5v-.5c0-.6.2-1.1.7-1.5A5.5 5.5 0 0 0 10 2.5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M8 17.5h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    <span>스마트 모드</span>
+  </button>
+  <span class="spacer"></span>
+  <button class="tb-icon" id="btn-clear" title="완료 항목 지우기">
+    <svg viewBox="0 0 20 20" width="18" height="18"><path d="M4 6h12M8 6V4.5h4V6M6 6l.7 10h6.6L14 6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button class="tb-icon" id="btn-open-folder" title="다운로드 폴더 열기">
+    <svg viewBox="0 0 20 20" width="18" height="18"><path d="M2.5 5.5A1.5 1.5 0 0 1 4 4h3.5l1.5 2h7A1.5 1.5 0 0 1 17.5 7.5v7A1.5 1.5 0 0 1 16 16H4a1.5 1.5 0 0 1-1.5-1.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+  </button>
+  <button class="tb-icon" id="btn-settings" title="설정 (Ctrl+,)">
+    <svg viewBox="0 0 20 20" width="18" height="18"><circle cx="10" cy="10" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M15.3 4.7l-1.6 1.6M6.3 13.7l-1.6 1.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+  </button>
 </header>
 
-<!-- 바이너리 설치/오류 배너 -->
+<!-- 필수 구성요소 설치/오류 배너 -->
 <div class="banner" id="banner" hidden></div>
 
 <main class="content">
-  <div class="filters" id="filters" hidden>
-    <button class="pill active" data-filter="all">전체</button>
-    <button class="pill" data-filter="active">진행 중</button>
-    <button class="pill" data-filter="done">완료</button>
-    <span class="spacer"></span>
-    <button class="btn ghost small" id="btn-clear">완료 항목 지우기</button>
-  </div>
-
   <div class="empty" id="empty">
-    <svg viewBox="0 0 48 48" width="56" height="56"><path d="M24 8v22m0 0-8-8m8 8 8-8" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 38h28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-    <p>영상 링크를 붙여넣으면 여기에 표시됩니다</p>
-    <button class="btn primary" id="btn-paste-empty">링크 붙여넣기</button>
+    <svg viewBox="0 0 120 96" width="132" height="106" aria-hidden="true">
+      <rect x="22" y="14" width="76" height="70" rx="8" fill="none" stroke="currentColor" stroke-width="3"/>
+      <rect x="44" y="8" width="32" height="14" rx="4" fill="var(--bg)" stroke="currentColor" stroke-width="3"/>
+      <path d="M50 52a8 8 0 0 1 0-11.3l5.6-5.6a8 8 0 0 1 11.3 11.3l-2.8 2.8M70 46a8 8 0 0 1 0 11.3l-5.6 5.6a8 8 0 0 1-11.3-11.3l2.8-2.8"
+            fill="none" stroke="var(--accent)" stroke-width="3.2" stroke-linecap="round"/>
+    </svg>
+    <p class="em-title">링크를 복사한 뒤 <b>링크 붙여넣기</b>를 누르세요</p>
+    <p class="em-sub">YouTube · SoundCloud 등의 영상, 재생목록, 채널 링크를 받을 수 있어요</p>
   </div>
-
+  <div id="pending"></div>
   <div class="list" id="list"></div>
 </main>
 
-<!-- 링크/화질 선택 모달 -->
-<div class="overlay" id="modal" hidden>
-  <div class="panel">
-    <div class="panel-head">
-      <input type="text" id="url-input" placeholder="https:// 영상 또는 재생목록 주소" spellcheck="false">
-      <button class="btn primary" id="btn-fetch">조회</button>
-    </div>
-    <div class="panel-body" id="panel-body"></div>
-    <div class="panel-foot" id="panel-foot" hidden>
-      <div class="fmt-pills" id="fmt-pills"></div>
-      <button class="btn primary" id="btn-download">다운로드</button>
+<!-- 다운로드 창 (영상 / 재생목록) -->
+<div class="overlay" id="dlg" hidden>
+  <div class="dialog wide" role="dialog" aria-labelledby="dlg-title">
+    <div class="dlg-head"><span id="dlg-title">영상 다운로드</span><button class="dlg-x" data-close title="닫기">×</button></div>
+    <div class="dlg-body" id="dlg-body"></div>
+    <div class="dlg-foot">
+      <div class="save-row">
+        <span class="save-label">저장 위치</span>
+        <input type="text" id="save-dir" readonly>
+        <button class="btn" id="btn-browse">찾아보기</button>
+      </div>
+      <div class="foot-btns">
+        <button class="btn" data-close>취소</button>
+        <button class="btn primary" id="dlg-ok">다운로드</button>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- 설정 모달 -->
-<div class="overlay" id="settings-modal" hidden>
-  <div class="panel narrow">
-    <h3>설정</h3>
-    <div class="setting-row">
-      <div><div class="setting-label">저장 폴더</div><div class="setting-value" id="out-dir"></div></div>
-      <button class="btn" id="btn-choose-folder">변경</button>
+<!-- 링크 입력 창 (클립보드에 링크가 없을 때) -->
+<div class="overlay" id="url-dlg" hidden>
+  <div class="dialog" role="dialog">
+    <div class="dlg-head"><span>링크 붙여넣기</span><button class="dlg-x" data-close title="닫기">×</button></div>
+    <div class="dlg-body">
+      <p class="hint-text">클립보드에 링크가 없어요. 영상이나 재생목록 주소를 입력하세요.</p>
+      <input type="text" id="url-input" class="text-input" placeholder="https://" spellcheck="false">
     </div>
-    <div class="setting-row">
-      <div class="setting-label">동시 다운로드</div>
-      <select id="sel-concurrent"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+    <div class="dlg-foot"><div class="foot-btns">
+      <button class="btn" data-close>취소</button><button class="btn primary" id="url-ok">계속</button>
+    </div></div>
+  </div>
+</div>
+
+<!-- 오류 창 -->
+<div class="overlay" id="err-dlg" hidden>
+  <div class="dialog" role="alertdialog">
+    <div class="dlg-head"><span>링크를 분석할 수 없어요</span><button class="dlg-x" data-close title="닫기">×</button></div>
+    <div class="dlg-body"><p class="err-text" id="err-text"></p></div>
+    <div class="dlg-foot"><div class="foot-btns"><button class="btn primary" data-close>확인</button></div></div>
+  </div>
+</div>
+
+<!-- 스마트 모드 창 -->
+<div class="overlay" id="smart-dlg" hidden>
+  <div class="dialog" role="dialog">
+    <div class="dlg-head"><span>스마트 모드</span><button class="dlg-x" data-close title="닫기">×</button></div>
+    <div class="dlg-body">
+      <p class="hint-text">켜 두면 링크를 붙여넣는 즉시 아래 설정으로 받아요. 재생목록은 전체를 받습니다.</p>
+      <label class="check big"><input type="checkbox" id="smart-on"> 스마트 모드 사용</label>
+      <div class="form-grid">
+        <label for="smart-kind">형식</label>
+        <select id="smart-kind">
+          <option value="video">영상 (MP4)</option><option value="mp3">오디오 (MP3)</option><option value="m4a">오디오 (M4A)</option>
+        </select>
+        <label for="smart-quality">화질</label>
+        <select id="smart-quality"></select>
+        <label for="smart-sub">자막</label>
+        <select id="smart-sub"></select>
+        <label>저장 위치</label>
+        <div class="dir-row"><input type="text" id="smart-dir" readonly><button class="btn" id="smart-browse">찾아보기</button></div>
+      </div>
     </div>
-    <div class="setting-row">
-      <div class="setting-label">yt-dlp 업데이트</div>
-      <button class="btn" id="btn-update">확인</button>
+    <div class="dlg-foot"><div class="foot-btns">
+      <button class="btn" data-close>취소</button><button class="btn primary" id="smart-ok">확인</button>
+    </div></div>
+  </div>
+</div>
+
+<!-- 설정 창 -->
+<div class="overlay" id="settings-dlg" hidden>
+  <div class="dialog" role="dialog">
+    <div class="dlg-head"><span>설정</span><button class="dlg-x" data-close title="닫기">×</button></div>
+    <div class="dlg-body">
+      <div class="set-row">
+        <div><div class="set-label">기본 저장 폴더</div><div class="set-value" id="out-dir"></div></div>
+        <button class="btn" id="btn-choose-folder">변경</button>
+      </div>
+      <div class="set-row">
+        <div class="set-label">동시 다운로드</div>
+        <select id="sel-concurrent"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+      </div>
+      <div class="set-row">
+        <div class="set-label">yt-dlp 업데이트</div>
+        <button class="btn" id="btn-update">업데이트 확인</button>
+      </div>
+      <div class="set-row">
+        <div><div class="set-label">오류 기록</div><div class="set-value ltr" id="versions"></div></div>
+        <button class="btn" id="btn-open-logs">로그 폴더</button>
+      </div>
+      <p class="credit">yt-dlp · ffmpeg 기반 · MIT</p>
     </div>
-    <div class="setting-row">
-      <div><div class="setting-label">오류 기록</div><div class="setting-value" id="versions" style="direction:ltr"></div></div>
-      <button class="btn" id="btn-open-logs">로그 폴더</button>
-    </div>
-    <p class="credit">yt-dlp · ffmpeg 기반 · MIT</p>
+    <div class="dlg-foot"><div class="foot-btns"><button class="btn primary" data-close>닫기</button></div></div>
   </div>
 </div>
 
 <div class="toasts" id="toasts"></div>
-<div class="resize-grip" id="resize-grip" title="크기 조절"></div>
-
 <script src="app.js"></script>
 </body>
 </html>
